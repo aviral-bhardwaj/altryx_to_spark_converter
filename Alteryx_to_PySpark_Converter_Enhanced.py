@@ -150,7 +150,7 @@ class AlteryxExpressionConverter:
     """Converts Alteryx expressions to PySpark expressions"""
     
     def __init__(self):
-        # Function mappings
+        # Function mappings - Enhanced with 50+ functions
         self.function_map = {
             # String functions
             'Trim': 'trim',
@@ -173,6 +173,11 @@ class AlteryxExpressionConverter:
             'PadLeft': 'lpad',
             'PadRight': 'rpad',
             'Concat': 'concat',
+            'ReverseString': 'reverse({0})',
+            'Capitalize': 'initcap({0})',
+            'GetWord': 'split({0}, {1})[{2}]',
+            'ReplaceFirst': 'regexp_replace({0}, {1}, {2})',
+            'ReplaceChar': 'translate({0}, {1}, {2})',
             
             # Null functions
             'IsNull': '{0}.isNull()',
@@ -189,6 +194,8 @@ class AlteryxExpressionConverter:
             'ToInteger': '{0}.cast("int")',
             'ToDate': 'to_date({0}, {1})',
             'ToDateTime': 'to_timestamp({0}, {1})',
+            'ConvertToInt': '{0}.cast("int")',
+            'ConvertFromInt': '{0}.cast("string")',
             
             # Date functions
             'DateTimeNow': 'current_timestamp()',
@@ -196,30 +203,47 @@ class AlteryxExpressionConverter:
             'DateTimeYear': 'year({0})',
             'DateTimeMonth': 'month({0})',
             'DateTimeDay': 'dayofmonth({0})',
+            'DateTimeHour': 'hour({0})',
+            'DateTimeMinute': 'minute({0})',
+            'DateTimeSecond': 'second({0})',
             'DateTimeAdd': 'date_add({0}, {1})',
             'DateTimeDiff': 'datediff({1}, {0})',
+            'DateTimeFormat': 'date_format({0}, {1})',
+            'DateTimeParse': 'to_timestamp({0}, {1})',
+            'DateTimeFirstOfMonth': 'trunc({0}, "month")',
+            'DateTimeLastOfMonth': 'last_day({0})',
+            'DateTimeStart': 'to_date({0})',
+            'DateTimeEnd': 'date_add(to_date({0}), 1)',
             
             # Math functions
             'Abs': 'abs',
             'Ceil': 'ceil',
+            'Ceiling': 'ceil',
             'Floor': 'floor',
             'Round': 'round',
             'Mod': 'mod',
             'Pow': 'pow',
+            'Power': 'pow',
             'Sqrt': 'sqrt',
             'Log': 'log',
             'Log10': 'log10',
             'Exp': 'exp',
             'Rand': 'rand',
+            'Sign': 'signum',
+            'Truncate': 'trunc',
             
             # Aggregate (for formulas that use these)
             'Min': 'least',
             'Max': 'greatest',
+            'Average': 'avg',
             
             # Regex
             'REGEX_Match': 'regexp_extract({0}, {1}, 0) != ""',
             'REGEX_Replace': 'regexp_replace({0}, {1}, {2})',
             'REGEX_CountMatches': 'size(split({0}, {1})) - 1',
+            
+            # Spatial functions (basic placeholders)
+            'Distance': 'sqrt(pow({0}-{2}, 2) + pow({1}-{3}, 2))',
         }
     
     def convert(self, alteryx_expr: str) -> str:
@@ -276,61 +300,98 @@ class AlteryxExpressionConverter:
         return ''.join(result)
     
     def _convert_if_statements(self, expr: str) -> str:
-        """Convert IF/ELSEIF/ELSE/ENDIF to when/otherwise chain"""
+        """Convert IF/ELSEIF/ELSE/ENDIF to when/otherwise chain - Enhanced recursive parser"""
         # Check if expression contains IF
         if not re.search(r'\bif\b', expr, re.IGNORECASE):
             return expr
         
-        # Pattern for full IF statement
-        # This is complex, so we'll do a simpler approach for common patterns
+        # Enhanced parser that handles nested IF and ELSEIF chains
+        def parse_if_block(text):
+            """Recursively parse IF/ELSEIF/ELSE/ENDIF blocks"""
+            # Find IF statement
+            if_match = re.search(r'\bif\s+', text, re.IGNORECASE)
+            if not if_match:
+                return text
+            
+            start_pos = if_match.start()
+            # Find the matching ENDIF by counting IF/ENDIF pairs
+            depth = 0
+            i = if_match.end()
+            segments = []
+            current_segment = {'type': 'if', 'start': i}
+            
+            while i < len(text):
+                # Check for keywords at word boundaries
+                remaining = text[i:].lower()
+                
+                if remaining.startswith('if ') and (i == 0 or not text[i-1].isalnum()):
+                    depth += 1
+                    i += 3
+                elif remaining.startswith('endif') and (i == 0 or not text[i-1].isalnum()):
+                    if depth == 0:
+                        # Found matching ENDIF
+                        current_segment['end'] = i
+                        segments.append(current_segment)
+                        
+                        # Convert segments to when/otherwise
+                        result = self._build_when_chain(text, segments)
+                        
+                        # Replace original IF block with converted version
+                        before = text[:start_pos]
+                        after = text[i+5:]  # Skip 'endif'
+                        return before + result + parse_if_block(after)
+                    else:
+                        depth -= 1
+                        i += 5
+                elif remaining.startswith('then ') and (i == 0 or not text[i-1].isalnum()) and depth == 0:
+                    current_segment['then_pos'] = i
+                    i += 5
+                elif remaining.startswith('elseif ') and (i == 0 or not text[i-1].isalnum()) and depth == 0:
+                    current_segment['end'] = i
+                    segments.append(current_segment)
+                    current_segment = {'type': 'elseif', 'start': i + 7}
+                    i += 7
+                elif remaining.startswith('else ') and (i == 0 or not text[i-1].isalnum()) and depth == 0:
+                    current_segment['end'] = i
+                    segments.append(current_segment)
+                    current_segment = {'type': 'else', 'start': i + 5}
+                    i += 5
+                else:
+                    i += 1
+            
+            return text
         
-        # Simple IF THEN ELSE ENDIF
-        simple_if = re.compile(
-            r'\bif\s+(.+?)\s+then\s+(.+?)\s+else\s+(.+?)\s+endif\b',
-            re.IGNORECASE | re.DOTALL
-        )
+        # Apply recursive parsing
+        result = parse_if_block(expr)
+        return result
+    
+    def _build_when_chain(self, text: str, segments: list) -> str:
+        """Build when/otherwise chain from parsed segments"""
+        if not segments:
+            return text
         
-        def replace_simple_if(match):
-            condition = match.group(1).strip()
-            then_val = match.group(2).strip()
-            else_val = match.group(3).strip()
-            return f'when({condition}, {then_val}).otherwise({else_val})'
+        result_parts = []
         
-        expr = simple_if.sub(replace_simple_if, expr)
+        for segment in segments:
+            seg_type = segment['type']
+            start = segment['start']
+            end = segment['end']
+            
+            if seg_type == 'if' or seg_type == 'elseif':
+                then_pos = segment.get('then_pos')
+                if then_pos:
+                    condition = text[start:then_pos].strip()
+                    value = text[then_pos+5:end].strip()  # Skip 'then '
+                    
+                    if not result_parts:
+                        result_parts.append(f'when({condition}, {value})')
+                    else:
+                        result_parts.append(f'.when({condition}, {value})')
+            elif seg_type == 'else':
+                value = text[start:end].strip()
+                result_parts.append(f'.otherwise({value})')
         
-        # Handle elseif chains (more complex)
-        # Pattern: if cond1 then val1 elseif cond2 then val2 ... else valN endif
-        elseif_pattern = re.compile(
-            r'\bif\s+(.+?)\s+then\s+(.+?)(?:\s+elseif\s+(.+?)\s+then\s+(.+?))*\s+else\s+(.+?)\s+endif\b',
-            re.IGNORECASE | re.DOTALL
-        )
-        
-        # For complex elseif, we need iterative processing
-        while 'elseif' in expr.lower():
-            # Find and convert one elseif at a time
-            match = re.search(
-                r'\bif\s+(.+?)\s+then\s+(.+?)\s+elseif\s+',
-                expr, re.IGNORECASE | re.DOTALL
-            )
-            if match:
-                # Complex chain - convert step by step
-                expr = re.sub(
-                    r'\belseif\b', '.when', expr, count=1, flags=re.IGNORECASE
-                )
-                expr = re.sub(
-                    r'\bif\s+(.+?)\s+then\s+(.+?)\s*\.when',
-                    r'when(\1, \2).when',
-                    expr, count=1, flags=re.IGNORECASE | re.DOTALL
-                )
-            else:
-                break
-        
-        # Final cleanup for then/else/endif
-        expr = re.sub(r'\s+then\s+', ', ', expr, flags=re.IGNORECASE)
-        expr = re.sub(r'\s+else\s+', ').otherwise(', expr, flags=re.IGNORECASE)
-        expr = re.sub(r'\s+endif\b', ')', expr, flags=re.IGNORECASE)
-        
-        return expr
+        return ''.join(result_parts)
     
     def _convert_operators(self, expr: str) -> str:
         """Convert Alteryx operators to PySpark"""
@@ -1025,6 +1086,34 @@ class AlteryxWorkflowParser:
 class PySparkCodeGenerator:
     """Generates accurate PySpark code from parsed Alteryx workflow"""
     
+    # Supported Alteryx plugins - centralized for easy maintenance
+    SUPPORTED_PLUGINS = {
+        "AlteryxBasePluginsGui.DbFileInput.DbFileInput",
+        "AlteryxBasePluginsGui.DbFileOutput.DbFileOutput",
+        "AlteryxBasePluginsGui.AlteryxSelect.AlteryxSelect",
+        "AlteryxBasePluginsGui.Filter.Filter",
+        "AlteryxBasePluginsGui.Formula.Formula",
+        "AlteryxBasePluginsGui.Join.Join",
+        "AlteryxBasePluginsGui.Union.Union",
+        "AlteryxBasePluginsGui.Summarize.Summarize",
+        "AlteryxBasePluginsGui.Sort.Sort",
+        "AlteryxBasePluginsGui.BrowseV2.BrowseV2",
+        "AlteryxBasePluginsGui.TextInput.TextInput",
+        "AlteryxBasePluginsGui.TextToColumns.TextToColumns",
+        "AlteryxBasePluginsGui.CrossTab.CrossTab",
+        "AlteryxBasePluginsGui.Unique.Unique",
+        "AlteryxBasePluginsGui.Sample.Sample",
+        "AlteryxBasePluginsGui.FindReplace.FindReplace",
+        "AlteryxGuiToolkit.ToolContainer.ToolContainer",
+        "AlteryxGuiToolkit.TextBox.TextBox",
+        # In-DB tools
+        "AlteryxBasePluginsGui.LockInFilter.LockInFilter",
+        "AlteryxBasePluginsGui.LockInSelect.LockInSelect",
+        "AlteryxBasePluginsGui.LockInJoin.LockInJoin",
+        "AlteryxBasePluginsGui.LockInStreamIn.LockInStreamIn",
+        "AlteryxBasePluginsGui.LockInStreamOut.LockInStreamOut",
+    }
+    
     def __init__(self, workflow: AlteryxWorkflow):
         self.workflow = workflow
         self.generated_code = []
@@ -1042,13 +1131,25 @@ class PySparkCodeGenerator:
             self.output_connections[conn.origin_tool_id].append(conn)
     
     def generate(self) -> str:
-        """Generate complete PySpark notebook"""
+        """Generate complete PySpark notebook with validation"""
         self.generated_code = []
+        
+        # Validate workflow structure before generation
+        validation_warnings = self._validate_workflow()
+        if validation_warnings:
+            self._add_line("# Databricks notebook source")
+            self._add_markdown_cell("## ⚠️ Workflow Validation Warnings\n\n" + 
+                                   "\n".join([f"- {w}" for w in validation_warnings]))
         
         self._add_header()
         self._add_imports()
         self._add_configuration()
         self._add_helper_functions()
+        
+        # Add execution plan if enabled
+        execution_plan = self._generate_execution_plan()
+        if execution_plan:
+            self._add_markdown_cell(f"## Execution Plan\n\n```\n{execution_plan}\n```")
         
         # Process containers in order
         for container in self.workflow.containers:
@@ -1128,25 +1229,60 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)""")
     
     def _add_configuration(self):
-        self._add_section("Configuration", "Extracted from Alteryx User Constants")
+        self._add_section("Configuration", "Extracted from Alteryx User Constants and Environment")
         
-        config_lines = ["config = {"]
+        config_lines = [
+            "# Configuration",
+            "import os",
+            "",
+            "config = {"
+        ]
+        
+        # Add user constants from workflow
         for key, value in self.workflow.constants.items():
             val = value["value"]
-            clean_key = key.replace(".", "_")
+            # Comprehensive key sanitization for Python identifiers
+            clean_key = re.sub(r'[^a-zA-Z0-9_]', '_', key)
+            # Ensure it doesn't start with a number
+            if clean_key[0].isdigit():
+                clean_key = f"_{clean_key}"
             if value["is_numeric"]:
                 config_lines.append(f'    "{clean_key}": {val},')
             else:
                 config_lines.append(f'    "{clean_key}": "{val}",')
         
+        # Add configurable paths with environment variable support
         config_lines.extend([
-            '    "input_path": "/mnt/data/input/",',
-            '    "output_path": "/mnt/data/output/",',
+            '',
+            '    # Environment paths (configurable)',
+            '    "input_catalog": os.getenv("INPUT_CATALOG", "raw"),',
+            '    "input_schema": os.getenv("INPUT_SCHEMA", "source"),',
+            '    "output_catalog": os.getenv("OUTPUT_CATALOG", "processed"),',
+            '    "output_schema": os.getenv("OUTPUT_SCHEMA", "analytics"),',
+            '',
+            '    # Volume paths (if using Unity Catalog Volumes)',
+            '    "input_volume": os.getenv("INPUT_VOLUME", "/Volumes/catalog/schema/volume/input"),',
+            '    "output_volume": os.getenv("OUTPUT_VOLUME", "/Volumes/catalog/schema/volume/output"),',
+            '',
+            '    # Legacy mount point paths (for backward compatibility)',
+            '    "input_path": os.getenv("INPUT_PATH", "/mnt/data/input/"),',
+            '    "output_path": os.getenv("OUTPUT_PATH", "/mnt/data/output/"),',
             "}"
         ])
         
+        # Add validation
+        config_lines.extend([
+            '',
+            '# Validate required configuration',
+            'required_config = ["input_catalog", "output_catalog"]',
+            'missing = [k for k in required_config if k not in config or not config[k]]',
+            'if missing:',
+            '    logger.warning(f"Missing recommended configuration: {missing}")',
+            '',
+            'logger.info(f"Configuration loaded: {config}")'
+        ])
+        
         self._add_line("\n".join(config_lines))
-        self._add_line('\nlogger.info(f"Configuration: {config}")')
     
     def _add_helper_functions(self):
         self._add_section("Helper Functions")
@@ -1335,10 +1471,12 @@ except Exception as e:
                         self._add_line(f'    .withColumnRenamed("{f.field_name}", "{f.rename}")')
                 self._add_line(")")
             else:
+                # Join select expressions with newlines
+                select_lines = ",\n        ".join(select_exprs)
                 self._add_line(f'''{df_name} = (
     {input_df}
     .select(
-        {(",chr(10)+"        ").join(select_exprs)}
+        {select_lines}
     )
 )''')
         else:
@@ -1497,11 +1635,12 @@ log_df({df_name}, "{df_name}")''')
             else:
                 agg_exprs.append(f'{pyspark_func}("{f.field_name}").alias("{alias}")')
         
+        agg_lines = ",\n        ".join(agg_exprs)
         self._add_line(f'''{df_name} = (
     {input_df}
     .groupBy({group_cols})
     .agg(
-        {(",chr(10)+"        ").join(agg_exprs)}
+        {agg_lines}
     )
 )
 log_df({df_name}, "{df_name}")''')
@@ -1540,11 +1679,12 @@ log_df({df_name}, "{df_name}")''')
                 escaped_row = [f'"{v}"' if v else 'None' for v in row]
                 data_rows.append(f"    ({', '.join(escaped_row)}),")
             
+            data_rows_text = "\n".join(data_rows)
             self._add_line(f'''# Text Input Data - {len(data.rows)} rows
 schema_{tool.tool_id} = StructType([{schema_fields}])
 
 data_{tool.tool_id} = [
-{chr(10).join(data_rows)}
+{data_rows_text}
 ]
 
 {df_name} = spark.createDataFrame(data_{tool.tool_id}, schema_{tool.tool_id})
@@ -1813,20 +1953,166 @@ log_df({df_name}, "{df_name}")''')
         return tool_map
     
     def _parse_connection_string(self, conn_str: str) -> Dict:
-        """Parse Alteryx connection string"""
-        result = {'table': '', 'path': ''}
+        """Parse Alteryx connection string - Enhanced with Unity Catalog support"""
+        result = {'table': '', 'path': '', 'catalog': '', 'schema': '', 'table_name': ''}
         
-        # Extract table from SQL query
-        match = re.search(r'from\s+([\w\.]+)', conn_str, re.IGNORECASE)
-        if match:
-            result['table'] = match.group(1)
+        if not conn_str:
+            return result
         
-        # Extract file path
-        match = re.search(r'[A-Za-z]:\\[^|]+', conn_str)
-        if match:
-            result['path'] = match.group(0)
+        # Extract Unity Catalog table reference (catalog.schema.table)
+        uc_match = re.search(r'(\w+)\.(\w+)\.(\w+)', conn_str)
+        if uc_match:
+            result['catalog'] = uc_match.group(1)
+            result['schema'] = uc_match.group(2)
+            result['table_name'] = uc_match.group(3)
+            result['table'] = f"{result['catalog']}.{result['schema']}.{result['table_name']}"
+        
+        # Extract table from SQL query (FROM clause)
+        sql_match = re.search(r'from\s+([\w\.]+)', conn_str, re.IGNORECASE)
+        if sql_match and not result['table']:
+            result['table'] = sql_match.group(1)
+        
+        # Extract Volume path (/Volumes/catalog/schema/volume/...)
+        volume_match = re.search(r'/Volumes/([\w]+)/([\w]+)/([\w]+)/([^\|]+)', conn_str)
+        if volume_match:
+            result['catalog'] = volume_match.group(1)
+            result['schema'] = volume_match.group(2)
+            result['volume'] = volume_match.group(3)
+            result['path'] = f"/Volumes/{result['catalog']}/{result['schema']}/{result['volume']}/{volume_match.group(4)}"
+        
+        # Extract legacy file path (Windows or Unix style)
+        if not result['path']:
+            # Windows path
+            win_match = re.search(r'[A-Za-z]:\\[^|]+', conn_str)
+            if win_match:
+                result['path'] = win_match.group(0)
+            else:
+                # Unix/mount point path
+                unix_match = re.search(r'/[^|]+', conn_str)
+                if unix_match:
+                    result['path'] = unix_match.group(0)
         
         return result
+    
+    def _validate_workflow(self) -> List[str]:
+        """Validate workflow structure and return list of warnings"""
+        warnings = []
+        
+        # Check for disconnected tools (no inputs or outputs)
+        all_tools = list(self.tool_lookup.values())
+        for tool in all_tools:
+            # Skip Browse and Output tools (they don't need outputs)
+            if tool.tool_type in ["Browse", "Output Data", "In-DB Stream Out"]:
+                continue
+            
+            has_input = tool.tool_id in self.input_connections
+            has_output = tool.tool_id in self.output_connections
+            
+            # Input tools don't need inputs
+            if tool.tool_type not in ["Input Data", "Text Input"] and not has_input:
+                warnings.append(f"Tool {tool.tool_id} ({tool.tool_type}) has no input connections")
+            
+            if not has_output:
+                warnings.append(f"Tool {tool.tool_id} ({tool.tool_type}) has no output connections - data may be unused")
+        
+        # Check for circular dependencies
+        if self._detect_cycles():
+            warnings.append("Circular dependencies detected in workflow - tool ordering may be incorrect")
+        
+        # Check for invalid connections (source tool doesn't exist)
+        for conn in self.workflow.connections:
+            if conn.origin_tool_id not in self.tool_lookup:
+                warnings.append(f"Connection from non-existent tool {conn.origin_tool_id} to {conn.destination_tool_id}")
+            if conn.destination_tool_id not in self.tool_lookup:
+                warnings.append(f"Connection to non-existent tool {conn.destination_tool_id} from {conn.origin_tool_id}")
+        
+        # Check for unsupported tool types
+        unsupported_tools = []
+        for tool in all_tools:
+            if "Macro:" in tool.tool_type or tool.plugin not in self.SUPPORTED_PLUGINS:
+                unsupported_tools.append(f"{tool.tool_id} ({tool.tool_type})")
+
+        
+        if unsupported_tools:
+            warnings.append(f"Unsupported tool types found: {', '.join(unsupported_tools[:5])}" + 
+                          (f" and {len(unsupported_tools)-5} more" if len(unsupported_tools) > 5 else ""))
+        
+        return warnings
+    
+    def _detect_cycles(self) -> bool:
+        """Detect circular dependencies in workflow using DFS"""
+        # Build adjacency list
+        graph = defaultdict(list)
+        for conn in self.workflow.connections:
+            graph[conn.origin_tool_id].append(conn.destination_tool_id)
+        
+        visited = set()
+        rec_stack = set()
+        
+        def has_cycle_util(tool_id):
+            visited.add(tool_id)
+            rec_stack.add(tool_id)
+            
+            for neighbor in graph.get(tool_id, []):
+                if neighbor not in visited:
+                    if has_cycle_util(neighbor):
+                        return True
+                elif neighbor in rec_stack:
+                    return True
+            
+            rec_stack.remove(tool_id)
+            return False
+        
+        for tool_id in self.tool_lookup.keys():
+            if tool_id not in visited:
+                if has_cycle_util(tool_id):
+                    return True
+        
+        return False
+    
+    def _generate_execution_plan(self) -> str:
+        """Generate a visual execution plan showing data flow"""
+        plan_lines = []
+        plan_lines.append("Workflow Execution Order:")
+        plan_lines.append("=" * 50)
+        
+        # For each container, show execution flow
+        for container in self.workflow.containers:
+            if not container.disabled:
+                plan_lines.append(f"\nContainer: {container.caption}")
+                plan_lines.append("-" * 40)
+                
+                ordered_tools = self._order_tools(container.tools)
+                for i, tool in enumerate(ordered_tools):
+                    # Get input connections
+                    inputs = self.input_connections.get(tool.tool_id, [])
+                    input_str = ", ".join([f"{c.origin_tool_id}" for c in inputs]) if inputs else "None"
+                    
+                    # Get output connections
+                    outputs = self.output_connections.get(tool.tool_id, [])
+                    output_str = ", ".join([f"{c.destination_tool_id}" for c in outputs]) if outputs else "None"
+                    
+                    plan_lines.append(f"  {i+1}. [{tool.tool_id}] {tool.tool_type}")
+                    plan_lines.append(f"     ← From: {input_str}")
+                    plan_lines.append(f"     → To: {output_str}")
+        
+        # Standalone tools
+        if self.workflow.tools:
+            plan_lines.append(f"\nStandalone Tools:")
+            plan_lines.append("-" * 40)
+            ordered_tools = self._order_tools(self.workflow.tools)
+            for i, tool in enumerate(ordered_tools):
+                inputs = self.input_connections.get(tool.tool_id, [])
+                input_str = ", ".join([f"{c.origin_tool_id}" for c in inputs]) if inputs else "None"
+                
+                outputs = self.output_connections.get(tool.tool_id, [])
+                output_str = ", ".join([f"{c.destination_tool_id}" for c in outputs]) if outputs else "None"
+                
+                plan_lines.append(f"  {i+1}. [{tool.tool_id}] {tool.tool_type}")
+                plan_lines.append(f"     ← From: {input_str}")
+                plan_lines.append(f"     → To: {output_str}")
+        
+        return "\n".join(plan_lines)
     
     def _add_footer(self):
         self._add_section("Execution Summary")
