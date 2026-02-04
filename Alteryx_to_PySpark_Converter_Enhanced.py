@@ -1439,10 +1439,12 @@ except Exception as e:
                         self._add_line(f'    .withColumnRenamed("{f.field_name}", "{f.rename}")')
                 self._add_line(")")
             else:
+                # Join select expressions with newlines
+                select_lines = ",\n        ".join(select_exprs)
                 self._add_line(f'''{df_name} = (
     {input_df}
     .select(
-        {(",chr(10)+"        ").join(select_exprs)}
+        {select_lines}
     )
 )''')
         else:
@@ -1601,11 +1603,12 @@ log_df({df_name}, "{df_name}")''')
             else:
                 agg_exprs.append(f'{pyspark_func}("{f.field_name}").alias("{alias}")')
         
+        agg_lines = ",\n        ".join(agg_exprs)
         self._add_line(f'''{df_name} = (
     {input_df}
     .groupBy({group_cols})
     .agg(
-        {(",chr(10)+"        ").join(agg_exprs)}
+        {agg_lines}
     )
 )
 log_df({df_name}, "{df_name}")''')
@@ -1644,11 +1647,12 @@ log_df({df_name}, "{df_name}")''')
                 escaped_row = [f'"{v}"' if v else 'None' for v in row]
                 data_rows.append(f"    ({', '.join(escaped_row)}),")
             
+            data_rows_text = "\n".join(data_rows)
             self._add_line(f'''# Text Input Data - {len(data.rows)} rows
 schema_{tool.tool_id} = StructType([{schema_fields}])
 
 data_{tool.tool_id} = [
-{chr(10).join(data_rows)}
+{data_rows_text}
 ]
 
 {df_name} = spark.createDataFrame(data_{tool.tool_id}, schema_{tool.tool_id})
