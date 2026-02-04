@@ -1195,9 +1195,9 @@ log_dataframe_info({df_name}, "{df_name}")''')
             # Field references
             (r'\[([^\]]+)\]', r'col("\1")'),  # [Column] -> col("Column")
             
-            # Operators
-            (r'(?<!=)=(?!=)', r'=='),  # = -> == (but not ==)
-            (r'<>', r'!='),  # <> -> !=
+            # Operators - More robust pattern matching
+            (r'<>', r'!='),  # <> -> != (do this first)
+            (r'\b=\b', r'=='),  # = -> == (word boundary helps with edge cases)
             (r'\bAND\b', r' & '),  # AND -> &
             (r'\bOR\b', r' | '),  # OR -> |
             (r'\bNOT\s+', r'~'),  # NOT -> ~

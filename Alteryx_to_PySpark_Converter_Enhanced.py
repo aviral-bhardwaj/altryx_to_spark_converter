@@ -1086,6 +1086,34 @@ class AlteryxWorkflowParser:
 class PySparkCodeGenerator:
     """Generates accurate PySpark code from parsed Alteryx workflow"""
     
+    # Supported Alteryx plugins - centralized for easy maintenance
+    SUPPORTED_PLUGINS = {
+        "AlteryxBasePluginsGui.DbFileInput.DbFileInput",
+        "AlteryxBasePluginsGui.DbFileOutput.DbFileOutput",
+        "AlteryxBasePluginsGui.AlteryxSelect.AlteryxSelect",
+        "AlteryxBasePluginsGui.Filter.Filter",
+        "AlteryxBasePluginsGui.Formula.Formula",
+        "AlteryxBasePluginsGui.Join.Join",
+        "AlteryxBasePluginsGui.Union.Union",
+        "AlteryxBasePluginsGui.Summarize.Summarize",
+        "AlteryxBasePluginsGui.Sort.Sort",
+        "AlteryxBasePluginsGui.BrowseV2.BrowseV2",
+        "AlteryxBasePluginsGui.TextInput.TextInput",
+        "AlteryxBasePluginsGui.TextToColumns.TextToColumns",
+        "AlteryxBasePluginsGui.CrossTab.CrossTab",
+        "AlteryxBasePluginsGui.Unique.Unique",
+        "AlteryxBasePluginsGui.Sample.Sample",
+        "AlteryxBasePluginsGui.FindReplace.FindReplace",
+        "AlteryxGuiToolkit.ToolContainer.ToolContainer",
+        "AlteryxGuiToolkit.TextBox.TextBox",
+        # In-DB tools
+        "AlteryxBasePluginsGui.LockInFilter.LockInFilter",
+        "AlteryxBasePluginsGui.LockInSelect.LockInSelect",
+        "AlteryxBasePluginsGui.LockInJoin.LockInJoin",
+        "AlteryxBasePluginsGui.LockInStreamIn.LockInStreamIn",
+        "AlteryxBasePluginsGui.LockInStreamOut.LockInStreamOut",
+    }
+    
     def __init__(self, workflow: AlteryxWorkflow):
         self.workflow = workflow
         self.generated_code = []
@@ -1213,7 +1241,11 @@ logger = logging.getLogger(__name__)""")
         # Add user constants from workflow
         for key, value in self.workflow.constants.items():
             val = value["value"]
-            clean_key = key.replace(".", "_").replace("-", "_")
+            # Comprehensive key sanitization for Python identifiers
+            clean_key = re.sub(r'[^a-zA-Z0-9_]', '_', key)
+            # Ensure it doesn't start with a number
+            if clean_key[0].isdigit():
+                clean_key = f"_{clean_key}"
             if value["is_numeric"]:
                 config_lines.append(f'    "{clean_key}": {val},')
             else:
@@ -1997,27 +2029,9 @@ log_df({df_name}, "{df_name}")''')
         # Check for unsupported tool types
         unsupported_tools = []
         for tool in all_tools:
-            if "Macro:" in tool.tool_type or tool.plugin not in [
-                "AlteryxBasePluginsGui.DbFileInput.DbFileInput",
-                "AlteryxBasePluginsGui.DbFileOutput.DbFileOutput",
-                "AlteryxBasePluginsGui.AlteryxSelect.AlteryxSelect",
-                "AlteryxBasePluginsGui.Filter.Filter",
-                "AlteryxBasePluginsGui.Formula.Formula",
-                "AlteryxBasePluginsGui.Join.Join",
-                "AlteryxBasePluginsGui.Union.Union",
-                "AlteryxBasePluginsGui.Summarize.Summarize",
-                "AlteryxBasePluginsGui.Sort.Sort",
-                "AlteryxBasePluginsGui.BrowseV2.BrowseV2",
-                "AlteryxBasePluginsGui.TextInput.TextInput",
-                "AlteryxBasePluginsGui.TextToColumns.TextToColumns",
-                "AlteryxBasePluginsGui.CrossTab.CrossTab",
-                "AlteryxBasePluginsGui.Unique.Unique",
-                "AlteryxBasePluginsGui.Sample.Sample",
-                "AlteryxBasePluginsGui.FindReplace.FindReplace",
-                "AlteryxGuiToolkit.ToolContainer.ToolContainer",
-                "AlteryxGuiToolkit.TextBox.TextBox",
-            ]:
+            if "Macro:" in tool.tool_type or tool.plugin not in self.SUPPORTED_PLUGINS:
                 unsupported_tools.append(f"{tool.tool_id} ({tool.tool_type})")
+
         
         if unsupported_tools:
             warnings.append(f"Unsupported tool types found: {', '.join(unsupported_tools[:5])}" + 
