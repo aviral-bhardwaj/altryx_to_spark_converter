@@ -398,6 +398,8 @@ class PySparkCodeGenerator:
         self.workflow = workflow
         self.generated_code = []
         self.tool_to_df_map = {}  # Maps tool_id to DataFrame variable name
+        self.tool_output_map = {}
+        self.tool_lookup = self._build_tool_lookup()
         self.df_counter = 0
         
     def generate(self) -> str:
@@ -424,7 +426,7 @@ class PySparkCodeGenerator:
         # Process standalone tools
         if self.workflow.tools:
             self._add_section("Standalone Tools", "Tools not in any container")
-            for tool in self.workflow.tools:
+            for tool in self._order_tools(self.workflow.tools):
                 self._generate_tool_code(tool)
         
         # Add footer
@@ -566,6 +568,8 @@ def safe_join(df_left, df_right, left_keys, right_keys, join_type="inner", join_
     def _process_container(self, container: AlteryxContainer, level: int = 0):
         """Process a container and its contents"""
         prefix = "#" * (level + 2)
+        container_ids = self._collect_container_tool_ids(container)
+        container_io = self._summarize_container_io(container_ids)
         
         # Add container section
         tool_list = ", ".join([f"{t.tool_type} (ID: {t.tool_id})" for t in container.tools[:5]])
@@ -575,7 +579,9 @@ def safe_join(df_left, df_right, left_keys, right_keys, join_type="inner", join_
         self._add_markdown_cell(f"""{prefix} Container: {container.caption}
 **Container ID:** {container.tool_id}
 **Tools Count:** {len(container.tools)}
-**Tools:** {tool_list}""")
+**Tools:** {tool_list}
+**Inputs:** {container_io["inputs"]}
+**Outputs:** {container_io["outputs"]}""")
         
         # Process nested containers first
         for child_container in container.child_containers:
@@ -583,7 +589,7 @@ def safe_join(df_left, df_right, left_keys, right_keys, join_type="inner", join_
                 self._process_container(child_container, level + 1)
         
         # Process tools in container
-        for tool in container.tools:
+        for tool in self._order_tools(container.tools):
             self._generate_tool_code(tool, container.caption)
     
     def _get_df_name(self, tool_id: str, prefix: str = "df") -> str:
@@ -649,6 +655,9 @@ def safe_join(df_left, df_right, left_keys, right_keys, join_type="inner", join_
             self._generate_macro_code(tool, df_name)
         else:
             self._generate_generic_code(tool, df_name)
+
+        if tool.tool_id not in self.tool_output_map:
+            self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_input_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Input Data tool"""
@@ -675,6 +684,7 @@ try:
 except Exception as e:
     logger.error(f"Failed to read data: {{str(e)}}")
     raise''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_select_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Select tool"""
@@ -700,6 +710,7 @@ except Exception as e:
     # .drop("column_to_remove")  # Remove unwanted columns
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_filter_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Filter tool"""
@@ -728,6 +739,8 @@ log_dataframe_info({df_name}, "{df_name}")''')
 # Use {df_name}_true for True output, {df_name}_false for False output
 {df_name} = {df_name}_true
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["True", "T", "Output", "Out", "O", ""], f"{df_name}_true")
+        self._register_output(tool.tool_id, ["False", "F"], f"{df_name}_false")
     
     def _generate_formula_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Formula tool"""
@@ -751,6 +764,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     )
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_join_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Join tool"""
@@ -776,6 +790,9 @@ log_dataframe_info({df_name}, "{df_name}")''')
 {df_name} = {df_name}_joined
 
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Join", "J", "Output", "Out", "O", ""], f"{df_name}_joined")
+        self._register_output(tool.tool_id, ["Left", "L"], f"{df_name}_left_only")
+        self._register_output(tool.tool_id, ["Right", "R"], f"{df_name}_right_only")
     
     def _generate_union_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Union tool"""
@@ -791,6 +808,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     # Add more .unionByName() calls for additional inputs
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_summarize_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Summarize tool"""
@@ -819,6 +837,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     )
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_sort_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Sort tool"""
@@ -838,6 +857,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     )
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_text_input_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Text Input tool"""
@@ -864,6 +884,7 @@ data = [
 
 {df_name} = spark.createDataFrame(data, schema)
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_text_to_columns_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Text to Columns tool"""
@@ -886,6 +907,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     .drop("_split_array")
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_crosstab_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Cross Tab tool"""
@@ -901,6 +923,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     .agg(first("value_column"))  # Update aggregation
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_unique_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Unique tool"""
@@ -923,6 +946,8 @@ window_spec = Window.partitionBy("key_column_1", "key_column_2").orderBy("key_co
 
 {df_name} = {df_name}_unique
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Unique", "U", "Output", "Out", "O", ""], f"{df_name}_unique")
+        self._register_output(tool.tool_id, ["Duplicate", "D"], f"{df_name}_duplicates")
     
     def _generate_sample_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Sample tool"""
@@ -935,6 +960,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     # OR .limit(1000)  # For fixed number of rows
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_indb_filter_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for In-DB Filter tool"""
@@ -952,6 +978,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     .filter({pyspark_expr})
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_indb_select_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for In-DB Select tool"""
@@ -965,6 +992,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
     .select("*")  # Update with specific columns
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_browse_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Browse tool"""
@@ -976,6 +1004,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
 display({input_df})  # Interactive display in Databricks
 # OR: {input_df}.show(20, truncate=False)
 # OR: print(f"Row count: {{{input_df}.count():,}}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], input_df)
     
     def _generate_output_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Output Data tool"""
@@ -1001,6 +1030,7 @@ try:
 except Exception as e:
     logger.error(f"Failed to write output: {{str(e)}}")
     raise''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], input_df)
     
     def _generate_find_replace_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Find Replace tool"""
@@ -1022,6 +1052,7 @@ except Exception as e:
     )
 )
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_macro_code(self, tool: AlteryxTool, df_name: str):
         """Generate code for Alteryx Macro"""
@@ -1038,6 +1069,7 @@ log_dataframe_info({df_name}, "{df_name}")''')
 
 {df_name} = {input_df}  # Update with actual macro logic
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _generate_generic_code(self, tool: AlteryxTool, df_name: str):
         """Generate generic code for unsupported tools"""
@@ -1052,14 +1084,103 @@ log_dataframe_info({df_name}, "{df_name}")''')
 
 {df_name} = {input_df}  # Placeholder - update with actual logic
 log_dataframe_info({df_name}, "{df_name}")''')
+        self._register_output(tool.tool_id, ["Output", "Out", "O", ""], df_name)
     
     def _find_input_df(self, tool_id: str) -> str:
         """Find the input DataFrame variable name for a tool"""
         for conn in self.workflow.connections:
             if conn.destination_tool_id == tool_id:
-                if conn.origin_tool_id in self.tool_to_df_map:
-                    return self.tool_to_df_map[conn.origin_tool_id]
+                return self._resolve_connection_input(conn)
         return "df_input  # TODO: Update with actual input DataFrame"
+
+    def _register_output(self, tool_id: str, names: List[str], df_name: str):
+        outputs = self.tool_output_map.setdefault(tool_id, {})
+        for name in names:
+            outputs[self._normalize_connection_name(name)] = df_name
+
+    def _resolve_connection_input(self, conn: AlteryxConnection) -> str:
+        origin_id = conn.origin_tool_id
+        origin_output = self._normalize_connection_name(conn.origin_connection)
+        outputs = self.tool_output_map.get(origin_id, {})
+        if origin_output in outputs:
+            return outputs[origin_output]
+        if "output" in outputs:
+            return outputs["output"]
+        if origin_id in self.tool_to_df_map:
+            return self.tool_to_df_map[origin_id]
+        return "df_input  # TODO: Update with actual input DataFrame"
+
+    def _normalize_connection_name(self, name: str) -> str:
+        return (name or "output").strip().lower()
+
+    def _collect_container_tool_ids(self, container: AlteryxContainer) -> set:
+        tool_ids = {tool.tool_id for tool in container.tools}
+        for child in container.child_containers:
+            tool_ids.update(self._collect_container_tool_ids(child))
+        return tool_ids
+
+    def _summarize_container_io(self, tool_ids: set) -> Dict[str, str]:
+        inputs = set()
+        outputs = set()
+        for conn in self.workflow.connections:
+            origin_in = conn.origin_tool_id in tool_ids
+            dest_in = conn.destination_tool_id in tool_ids
+            if dest_in and not origin_in:
+                inputs.add(f"{conn.origin_tool_id}->{conn.destination_tool_id}")
+            if origin_in and not dest_in:
+                outputs.add(f"{conn.origin_tool_id}->{conn.destination_tool_id}")
+        return {
+            "inputs": ", ".join(sorted(inputs)) if inputs else "None",
+            "outputs": ", ".join(sorted(outputs)) if outputs else "None",
+        }
+
+    def _order_tools(self, tools: List[AlteryxTool]) -> List[AlteryxTool]:
+        """Topologically order tools by connections, stable by position."""
+        tool_ids = {t.tool_id for t in tools}
+        adjacency = {tool_id: set() for tool_id in tool_ids}
+        in_degree = {tool_id: 0 for tool_id in tool_ids}
+
+        for conn in self.workflow.connections:
+            if conn.origin_tool_id in tool_ids and conn.destination_tool_id in tool_ids:
+                if conn.destination_tool_id not in adjacency[conn.origin_tool_id]:
+                    adjacency[conn.origin_tool_id].add(conn.destination_tool_id)
+                    in_degree[conn.destination_tool_id] += 1
+
+        def sort_key(tool_id: str):
+            tool = self.tool_lookup.get(tool_id)
+            if tool and tool.position:
+                return (tool.position.get("x", 0), tool.position.get("y", 0), tool_id)
+            return (0, 0, tool_id)
+
+        ready = [tool_id for tool_id, deg in in_degree.items() if deg == 0]
+        ready.sort(key=sort_key)
+        ordered = []
+
+        while ready:
+            current = ready.pop(0)
+            ordered.append(current)
+            for neighbor in sorted(adjacency[current], key=sort_key):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    ready.append(neighbor)
+            ready.sort(key=sort_key)
+
+        if len(ordered) != len(tool_ids):
+            return tools
+
+        return [self.tool_lookup[tool_id] for tool_id in ordered if tool_id in self.tool_lookup]
+
+    def _build_tool_lookup(self) -> Dict[str, AlteryxTool]:
+        tool_map = {tool.tool_id: tool for tool in self.workflow.tools}
+        for container in self.workflow.containers:
+            tool_map.update(self._build_container_tool_lookup(container))
+        return tool_map
+
+    def _build_container_tool_lookup(self, container: AlteryxContainer) -> Dict[str, AlteryxTool]:
+        tool_map = {tool.tool_id: tool for tool in container.tools}
+        for child in container.child_containers:
+            tool_map.update(self._build_container_tool_lookup(child))
+        return tool_map
     
     def _convert_alteryx_expression(self, expression: str) -> str:
         """Convert Alteryx expression to PySpark expression"""
