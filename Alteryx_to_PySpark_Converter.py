@@ -1183,33 +1183,70 @@ log_dataframe_info({df_name}, "{df_name}")''')
         return tool_map
     
     def _convert_alteryx_expression(self, expression: str) -> str:
-        """Convert Alteryx expression to PySpark expression"""
+        """Convert Alteryx expression to PySpark expression - Enhanced"""
         if not expression:
             return 'lit(True)  # TODO: Add filter condition'
         
         # Basic conversions
         pyspark_expr = expression
         
-        # Replace Alteryx syntax with PySpark
+        # Replace Alteryx syntax with PySpark - Enhanced with more patterns
         replacements = [
+            # Field references
             (r'\[([^\]]+)\]', r'col("\1")'),  # [Column] -> col("Column")
-            (r'=(?!=)', r'=='),  # = -> == (but not ==)
+            
+            # Operators
+            (r'(?<!=)=(?!=)', r'=='),  # = -> == (but not ==)
             (r'<>', r'!='),  # <> -> !=
-            (r'\bAND\b', r'&'),  # AND -> &
-            (r'\bOR\b', r'|'),  # OR -> |
-            (r'\bNOT\b', r'~'),  # NOT -> ~
+            (r'\bAND\b', r' & '),  # AND -> &
+            (r'\bOR\b', r' | '),  # OR -> |
+            (r'\bNOT\s+', r'~'),  # NOT -> ~
+            
+            # Null handling
             (r'\bNull\(\)', r'lit(None)'),  # Null() -> lit(None)
             (r'\bIsNull\(', r'isnull('),  # IsNull -> isnull
-            (r'\bIsEmpty\(', r'(col("").isNull() | (col("") == ""))'),  # IsEmpty
+            (r'\bIsNotNull\(', r'isnotnull('),  # IsNotNull
+            (r'\bIFNULL\(([^,]+),\s*([^)]+)\)', r'coalesce(\1, \2)'),  # IFNULL
+            
+            # String functions
+            (r'\bUpper\(', r'upper('),  # Upper
+            (r'\bLower\(', r'lower('),  # Lower
+            (r'\bTrim\(', r'trim('),  # Trim
+            (r'\bLength\(', r'length('),  # Length
             (r'\bContains\(([^,]+),\s*([^)]+)\)', r'\1.contains(\2)'),  # Contains
+            (r'\bStartsWith\(([^,]+),\s*([^)]+)\)', r'\1.startswith(\2)'),  # StartsWith
+            (r'\bEndsWith\(([^,]+),\s*([^)]+)\)', r'\1.endswith(\2)'),  # EndsWith
+            
+            # Date functions
+            (r'\bDateTimeNow\(\)', r'current_timestamp()'),  # DateTimeNow
+            (r'\bDateTimeToday\(\)', r'current_date()'),  # DateTimeToday
+            (r'\bDateTimeYear\(', r'year('),  # DateTimeYear
+            (r'\bDateTimeMonth\(', r'month('),  # DateTimeMonth
+            (r'\bDateTimeDay\(', r'dayofmonth('),  # DateTimeDay
+            
+            # Math functions
+            (r'\bAbs\(', r'abs('),  # Abs
+            (r'\bCeil\(', r'ceil('),  # Ceil
+            (r'\bFloor\(', r'floor('),  # Floor
+            (r'\bRound\(', r'round('),  # Round
+            (r'\bSqrt\(', r'sqrt('),  # Sqrt
+            
+            # Conditional and pattern matching
             (r'\bLIKE\b', r'.like'),  # LIKE
             (r'\bIN\s*\(', r'.isin('),  # IN (
+            
+            # Simple IF THEN ELSE ENDIF (basic support)
+            (r'\bIF\s+(.+?)\s+THEN\s+(.+?)\s+ELSE\s+(.+?)\s+ENDIF\b', 
+             r'when(\1, \2).otherwise(\3)'),  # IF THEN ELSE
         ]
         
         for pattern, replacement in replacements:
             pyspark_expr = re.sub(pattern, replacement, pyspark_expr, flags=re.IGNORECASE)
         
-        return f'expr("""{pyspark_expr}""")  # Converted from: {expression[:50]}...'
+        # Cleanup extra spaces
+        pyspark_expr = re.sub(r'\s+', ' ', pyspark_expr).strip()
+        
+        return f'expr("""{pyspark_expr}""")'
     
     def _add_footer(self):
         """Add notebook footer"""
